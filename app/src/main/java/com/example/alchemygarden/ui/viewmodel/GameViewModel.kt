@@ -79,6 +79,7 @@ class GameViewModel(
     fun harvestPot(slot: Int) { act { s, t -> engine.harvestPot(s, slot, t) } }
     fun hatch(homId: String) { act { s, _ -> engine.hatchHomunculus(s, homId) } }
     fun craft(recipeId: String) { act { s, t -> engine.enqueueCraft(s, recipeId, t) } }
+    fun toggleSound() { _state.value = _state.value.copy(soundEnabled = !_state.value.soundEnabled) }
     fun catchButterfly() { act { s, t -> engine.catchButterfly(s, t) } }
 
     fun startExpedition(biomeId: String) {

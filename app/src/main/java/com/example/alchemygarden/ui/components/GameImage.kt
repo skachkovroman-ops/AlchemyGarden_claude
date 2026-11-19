@@ -61,7 +61,15 @@ fun GameImage(
     contentScale: ContentScale = ContentScale.Fit,
     fallbackEmoji: String? = null,
     emojiSize: TextUnit = 32.sp
-) = GameImage(listOf(name), modifier, contentScale, 1f, null, fallbackEmoji, emojiSize)
+) {
+    GameImage(
+        names = listOf(name),
+        modifier = modifier,
+        contentScale = contentScale,
+        fallbackEmoji = fallbackEmoji,
+        emojiSize = emojiSize
+    )
+}
 
 /** Соглашение об именах картинок. Полный список — в IMAGES.md. */
 object Art {

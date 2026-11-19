@@ -48,5 +48,7 @@ data class PlayerState(
     val pots: List<ActivePot> = emptyList(),
     val craftQueue: List<CraftJob> = emptyList(),
     val activeExpedition: ActiveExpedition? = null,
-    val lastAutoWaterAtMillis: Long = 0L
+    val lastAutoWaterAtMillis: Long = 0L,
+    /** Общий выключатель музыки и звуков. */
+    val soundEnabled: Boolean = true
 )
