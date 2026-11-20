@@ -78,7 +78,12 @@ class GameViewModel(
     fun waterPot(slot: Int) { act { s, t -> engine.waterPot(s, slot, t) } }
     fun harvestPot(slot: Int) { act { s, t -> engine.harvestPot(s, slot, t) } }
     fun hatch(homId: String) { act { s, _ -> engine.hatchHomunculus(s, homId) } }
+    fun upgradeHomunculus(homId: String) { act { s, _ -> engine.upgradeHomunculus(s, homId) } }
+    fun buyUpgrade(upgradeId: String) { act { s, _ -> engine.buyUpgrade(s, upgradeId) } }
     fun craft(recipeId: String) { act { s, t -> engine.enqueueCraft(s, recipeId, t) } }
+    fun drinkElixir(recipeId: String) { act { s, t -> engine.drinkElixir(s, recipeId, t) } }
+    fun completeOrder(orderId: String) { act { s, t -> engine.completeOrder(s, orderId, t) } }
+    fun refreshOrders(essenceCost: Int = 5) { act { s, t -> engine.manualRefreshOrders(s, t, essenceCost) } }
     fun toggleSound() { _state.value = _state.value.copy(soundEnabled = !_state.value.soundEnabled) }
     fun catchButterfly() { act { s, t -> engine.catchButterfly(s, t) } }
 

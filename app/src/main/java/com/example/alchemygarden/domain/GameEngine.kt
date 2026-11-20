@@ -33,6 +33,7 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
     private val recipes = config.recipes.associateBy { it.id }
     private val biomes = config.biomes.associateBy { it.id }
     private val homunculi = config.homunculi.associateBy { it.id }
+    private val upgrades = config.upgrades.associateBy { it.id }
 
     private fun ms(seconds: Int): Long =
         (seconds * 1000L * config.settings.timeScale).toLong().coerceAtLeast(1L)
@@ -42,12 +43,136 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
     private fun fail(state: PlayerState, text: String) =
         Outcome(state, listOf(GameEvent(text, Sfx.ERROR)), ok = false)
 
-    // ───────── Бонусы гомункулов ─────────
+    // ───────── Уровни, улучшения и бусты ─────────
+
+    fun homunculusLevel(state: PlayerState, homId: String): Int =
+        (state.homunculusLevels[homId] ?: 1).coerceAtLeast(1)
+
+    fun isHomunculusEvolved(state: PlayerState, homId: String): Boolean =
+        homunculusLevel(state, homId) >= 5
 
     fun effect(state: PlayerState, type: EffectType): Double =
         config.homunculi
             .filter { it.id in state.hatchedHomunculi && it.effect == type }
-            .sumOf { it.effectValue }
+            .sumOf { hom ->
+                val lvl = homunculusLevel(state, hom.id)
+                val levelMult = 1.0 + (lvl - 1) * 0.25
+                val evoBonus = if (lvl >= 5) {
+                    when (type) {
+                        EffectType.AUTO_WATER -> 1.0
+                        EffectType.FASTER_BREWING -> 0.10
+                        EffectType.BONUS_HARVEST -> 0.15
+                        EffectType.FASTER_EXPEDITIONS -> 0.10
+                    }
+                } else 0.0
+                hom.effectValue * levelMult + evoBonus
+            }
+
+    fun upgradeLevel(state: PlayerState, upgradeId: String): Int =
+        state.upgradeLevels[upgradeId] ?: 0
+
+    fun upgradeBonus(state: PlayerState, target: UpgradeTarget): Double =
+        config.upgrades
+            .filter { it.target == target }
+            .sumOf { cfg -> cfg.bonusPerLevel * upgradeLevel(state, cfg.id) }
+
+    fun maxCraftQueue(state: PlayerState): Int =
+        (config.settings.maxCraftQueue + upgradeBonus(state, UpgradeTarget.CRAFT_QUEUE).toInt())
+            .coerceAtLeast(1)
+
+    fun upgradeCost(cfg: UpgradeConfig, currentLevel: Int): List<IngredientRequirement> {
+        val mult = currentLevel + 1
+        return cfg.baseCost.map { it.copy(amount = (it.amount * mult).coerceAtLeast(1)) }
+    }
+
+    fun upgradeEssenceCost(cfg: UpgradeConfig, currentLevel: Int): Int =
+        (cfg.baseEssenceCost * (currentLevel + 1)).coerceAtLeast(0)
+
+    fun buyUpgrade(state: PlayerState, upgradeId: String): Outcome {
+        val cfg = upgrades[upgradeId] ?: return fail(state, "Неизвестное улучшение")
+        val curLvl = upgradeLevel(state, upgradeId)
+        if (curLvl >= cfg.maxLevel) return fail(state, "Достигнут максимальный уровень")
+        val cost = upgradeCost(cfg, curLvl)
+        val essenceCost = upgradeEssenceCost(cfg, curLvl)
+        if (!hasAll(state, cost) || state.essence < essenceCost) {
+            return fail(state, "Не хватает ресурсов или эссенции")
+        }
+        val nextLvl = curLvl + 1
+        val consumed = consume(state, cost).copy(
+            essence = state.essence - essenceCost,
+            upgradeLevels = state.upgradeLevels + (upgradeId to nextLvl)
+        )
+        val updated = if (cfg.target == UpgradeTarget.POT_SLOTS) {
+            val extraSlots = upgradeBonus(consumed, UpgradeTarget.POT_SLOTS).toInt()
+            consumed.copy(potSlotCount = (config.settings.potSlots + extraSlots).coerceAtLeast(consumed.potSlotCount))
+        } else consumed
+        return Outcome(updated, listOf(GameEvent("Улучшено: ${cfg.name} (Ур. $nextLvl)", Sfx.UNLOCK)))
+    }
+
+    fun homunculusUpgradeCost(hom: HomunculusConfig, currentLevel: Int): List<IngredientRequirement> {
+        val mult = currentLevel
+        return hom.upgradeIngredients.map { it.copy(amount = (it.amount * mult).coerceAtLeast(1)) }
+    }
+
+    fun homunculusUpgradeEssenceCost(hom: HomunculusConfig, currentLevel: Int): Int =
+        (hom.upgradeBaseEssence * currentLevel).coerceAtLeast(1)
+
+    fun upgradeHomunculus(state: PlayerState, homId: String): Outcome {
+        val hom = homunculi[homId] ?: return fail(state, "Неизвестное существо")
+        if (homId !in state.hatchedHomunculi) return fail(state, "Сначала выведите существо")
+        val curLvl = homunculusLevel(state, homId)
+        if (curLvl >= hom.maxLevel) return fail(state, "Достигнут максимум эволюции")
+        val cost = homunculusUpgradeCost(hom, curLvl)
+        val essenceCost = homunculusUpgradeEssenceCost(hom, curLvl)
+        if (!hasAll(state, cost) || state.essence < essenceCost) {
+            return fail(state, "Не хватает материалов или эссенции")
+        }
+        val nextLvl = curLvl + 1
+        val next = consume(state, cost).copy(
+            essence = state.essence - essenceCost,
+            homunculusLevels = state.homunculusLevels + (homId to nextLvl)
+        )
+        val msg = if (nextLvl == hom.maxLevel) {
+            "${hom.name} достиг эволюции (Ур. $nextLvl)!"
+        } else {
+            "${hom.name} улучшен до Ур. $nextLvl"
+        }
+        return Outcome(next, listOf(GameEvent(msg, Sfx.UNLOCK)))
+    }
+
+    fun activeBoostValue(state: PlayerState, type: BoostType, now: Long): Double =
+        state.activeBoosts
+            .filter { it.type == type && it.expiresAtMillis > now }
+            .sumOf { it.value }
+
+    fun hasWeatherShield(state: PlayerState, now: Long): Boolean =
+        activeBoostValue(state, BoostType.WEATHER_SHIELD, now) > 0.0
+
+    fun drinkElixir(state: PlayerState, recipeId: String, now: Long): Outcome {
+        val recipe = recipes[recipeId] ?: return fail(state, "Неизвестный эликсир")
+        val boost = recipe.boost ?: return fail(state, "Этот предмет нельзя выпить как усилитель")
+        val count = state.inventorySupplies[recipeId] ?: 0
+        if (count <= 0) return fail(state, "Нет на складе")
+
+        val durationMs = ms(boost.durationSeconds)
+        val cleaned = state.activeBoosts.filter { it.expiresAtMillis > now }
+        val newBoost = ActiveBoost(
+            recipeId = recipe.id,
+            type = boost.type,
+            value = boost.value,
+            expiresAtMillis = now + durationMs
+        )
+        val next = state.copy(
+            inventorySupplies = state.inventorySupplies.dec(recipeId, 1),
+            activeBoosts = cleaned + newBoost
+        )
+        return Outcome(next, listOf(GameEvent("Применён эликсир: ${recipe.name}", Sfx.BREW_DONE)))
+    }
+
+    private fun pruneBoosts(state: PlayerState, now: Long): PlayerState {
+        val active = state.activeBoosts.filter { it.expiresAtMillis > now }
+        return if (active.size == state.activeBoosts.size) state else state.copy(activeBoosts = active)
+    }
 
     // ───────── Инвентарь ─────────
 
@@ -86,7 +211,7 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
         loot.entries.joinToString(", ") { "${plants[it.key]?.name ?: it.key} ×${it.value}" }
 
     private fun rollLoot(ids: List<String>, picks: Int): Map<String, Int> {
-        if (ids.isEmpty()) return emptyMap()
+        if (ids.isEmpty() || picks <= 0) return emptyMap()
         val m = mutableMapOf<String, Int>()
         repeat(picks) { val id = ids.random(random); m[id] = (m[id] ?: 0) + 1 }
         return m
@@ -94,14 +219,27 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
 
     // ───────── Оранжерея ─────────
 
-    fun growthMillis(plantId: String): Long = ms(plants[plantId]?.growthTimeSeconds ?: 1)
+    fun growthMillis(plantId: String, state: PlayerState? = null, now: Long = 0L): Long {
+        val base = ms(plants[plantId]?.growthTimeSeconds ?: 1)
+        if (state == null) return base
+        val totalReduction = (upgradeBonus(state, UpgradeTarget.GROWTH_SPEED) +
+            activeBoostValue(state, BoostType.FAST_GROWTH, now)).coerceAtMost(0.85)
+        return (base * (1.0 - totalReduction)).toLong().coerceAtLeast(1L)
+    }
 
     /**
      * Рост в два этапа: первая половина идёт сама, потом растение «просит пить»
-     * и вторая половина идёт только после полива.
+     * и вторая половина идёт только после полива (либо сразу при активном WEATHER_SHIELD).
      */
-    fun potStatus(pot: ActivePot, now: Long): PotStatus {
-        val g = growthMillis(pot.plantId)
+    fun potStatus(pot: ActivePot, now: Long, state: PlayerState? = null): PotStatus {
+        val g = growthMillis(pot.plantId, state, now)
+        val shield = state != null && hasWeatherShield(state, now)
+        if (shield) {
+            val readyAt = pot.plantedAtMillis + g
+            if (now >= readyAt) return PotStatus(PotStage.READY, 1f, 0)
+            val p = ((now - pot.plantedAtMillis).toFloat() / g).coerceIn(0f, 1f)
+            return PotStatus(PotStage.GROWING, p, ceilSeconds(readyAt - now))
+        }
         val half = g / 2
         val phase1End = pot.plantedAtMillis + half
         if (now < phase1End) {
@@ -130,7 +268,7 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
 
     fun waterPot(state: PlayerState, slot: Int, now: Long): Outcome {
         val pot = state.pots.firstOrNull { it.slotIndex == slot } ?: return fail(state, "Горшок пуст")
-        if (potStatus(pot, now).stage != PotStage.THIRSTY) return Outcome(state, ok = false)
+        if (potStatus(pot, now, state).stage != PotStage.THIRSTY) return Outcome(state, ok = false)
         return Outcome(
             state.copy(pots = state.pots.map { if (it.slotIndex == slot) it.copy(wateredAtMillis = now) else it }),
             listOf(GameEvent("", Sfx.WATER))
@@ -140,8 +278,14 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
     fun harvestPot(state: PlayerState, slot: Int, now: Long): Outcome {
         val pot = state.pots.firstOrNull { it.slotIndex == slot } ?: return fail(state, "Горшок пуст")
         val plant = plants[pot.plantId] ?: return fail(state, "Неизвестное растение")
-        if (potStatus(pot, now).stage != PotStage.READY) return fail(state, "Ещё не созрело")
-        val bonus = if (random.nextDouble() < effect(state, EffectType.BONUS_HARVEST)) 1 else 0
+        if (potStatus(pot, now, state).stage != PotStage.READY) return fail(state, "Ещё не созрело")
+        val harvestEffect = effect(state, EffectType.BONUS_HARVEST)
+        val roll = random.nextDouble()
+        val bonus = when {
+            roll < (harvestEffect - 1.0).coerceAtLeast(0.0) -> 2
+            roll < harvestEffect -> 1
+            else -> 0
+        }
         val amount = plant.yieldAmount + bonus
         val next = addPlants(
             state.copy(pots = state.pots.filterNot { it.slotIndex == slot }),
@@ -156,18 +300,24 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
         if (id !in state.unlockedHomunculi) return fail(state, "Ядро ещё не найдено")
         if (id in state.hatchedHomunculi) return fail(state, "Уже выведен")
         if (!hasAll(state, hom.recipe)) return fail(state, "Не хватает ингредиентов")
-        val next = consume(state, hom.recipe).copy(hatchedHomunculi = state.hatchedHomunculi + id)
+        val next = consume(state, hom.recipe).copy(
+            hatchedHomunculi = state.hatchedHomunculi + id,
+            homunculusLevels = state.homunculusLevels + (id to 1)
+        )
         return Outcome(next, listOf(GameEvent("Вылупился: ${hom.name}!", Sfx.UNLOCK)))
     }
 
     // ───────── Лаборатория ─────────
 
-    fun craftDurationMillis(recipe: RecipeConfig, state: PlayerState): Long =
-        (ms(recipe.craftingTimeSeconds) * (1.0 - effect(state, EffectType.FASTER_BREWING)))
+    fun craftDurationMillis(recipe: RecipeConfig, state: PlayerState): Long {
+        val totalReduction = (effect(state, EffectType.FASTER_BREWING) +
+            upgradeBonus(state, UpgradeTarget.BREW_SPEED)).coerceAtMost(0.85)
+        return (ms(recipe.craftingTimeSeconds) * (1.0 - totalReduction))
             .toLong().coerceAtLeast(1L)
+    }
 
     fun craftBlocker(state: PlayerState, recipe: RecipeConfig): String? = when {
-        state.craftQueue.size >= config.settings.maxCraftQueue -> "Очередь варки полна"
+        state.craftQueue.size >= maxCraftQueue(state) -> "Очередь варки полна"
         !hasAll(state, recipe.ingredients) -> "Не хватает ингредиентов"
         else -> null
     }
@@ -195,6 +345,56 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
                 craftedRecipes = state.craftedRecipes + done.map { it.recipeId }
             ),
             events
+        )
+    }
+
+    // ───────── Доска заказов ─────────
+
+    private fun generateOrders(state: PlayerState, now: Long): PlayerState {
+        if (config.orderTemplates.isEmpty()) return state.copy(lastOrderRefreshMillis = now)
+        val unlockedCount = state.unlockedBiomes.size.coerceAtLeast(1)
+        val eligible = config.orderTemplates.filter { it.minUnlockedBiomes <= unlockedCount }
+            .ifEmpty { config.orderTemplates }
+        val picked = eligible.shuffled(random).take(config.settings.activeOrderCount.coerceAtLeast(1))
+        val orders = picked.mapIndexed { idx, tpl ->
+            ActiveOrder(
+                id = "${tpl.id}_${now}_$idx",
+                title = tpl.title,
+                requirements = tpl.requirements,
+                rewardEssence = tpl.rewardEssence
+            )
+        }
+        return state.copy(currentOrders = orders, lastOrderRefreshMillis = now)
+    }
+
+    private fun refreshOrdersIfDue(state: PlayerState, now: Long): PlayerState {
+        val interval = ms(config.settings.orderRefreshIntervalSeconds)
+        if (state.currentOrders.isEmpty() || now - state.lastOrderRefreshMillis >= interval) {
+            return generateOrders(state, now)
+        }
+        return state
+    }
+
+    fun manualRefreshOrders(state: PlayerState, now: Long, essenceCost: Int = 5): Outcome {
+        if (config.orderTemplates.isEmpty()) return fail(state, "Заказы пока недоступны")
+        if (state.essence < essenceCost) return fail(state, "Нужно $essenceCost эссенции для обновления")
+        val next = generateOrders(state.copy(essence = state.essence - essenceCost), now)
+        return Outcome(next, listOf(GameEvent("Список заказов обновлён", Sfx.PAGE)))
+    }
+
+    fun completeOrder(state: PlayerState, orderId: String, now: Long): Outcome {
+        val order = state.currentOrders.firstOrNull { it.id == orderId }
+            ?: return fail(state, "Заказ не найден")
+        if (!hasAll(state, order.requirements)) return fail(state, "Не хватает ресурсов для заказа")
+        val remaining = state.currentOrders.filterNot { it.id == orderId }
+        val consumed = consume(state, order.requirements).copy(
+            essence = state.essence + order.rewardEssence,
+            currentOrders = remaining
+        )
+        val toppedUp = if (consumed.currentOrders.isEmpty()) generateOrders(consumed, now) else consumed
+        return Outcome(
+            toppedUp,
+            listOf(GameEvent("Заказ выполнен: +${order.rewardEssence} эссенции", Sfx.UNLOCK))
         )
     }
 
@@ -238,7 +438,9 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
         biome.unlocksBiomeIds.filter { it !in state.unlockedBiomes }
             .forEach { events += GameEvent("Туман рассеялся: ${biomes[it]?.name}", Sfx.UNLOCK) }
 
-        val loot = rollLoot(biome.rewardPlantIds, random.nextInt(2, 4))
+        val luckExtra = activeBoostValue(state, BoostType.LUCK_EXPEDITION, now).toInt().coerceAtLeast(0)
+        val picks = random.nextInt(2, 4) + luckExtra
+        val loot = rollLoot(biome.rewardPlantIds, picks)
         if (loot.isNotEmpty()) events += GameEvent("Находки: ${lootText(loot)}")
 
         val next = addPlants(
@@ -273,7 +475,7 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
         if (count <= 0) return Outcome(state)
         if (now - state.lastAutoWaterAtMillis < ms(config.settings.autoWaterIntervalSeconds)) return Outcome(state)
         val slots = state.pots
-            .filter { potStatus(it, now).stage == PotStage.THIRSTY }
+            .filter { potStatus(it, now, state).stage == PotStage.THIRSTY }
             .sortedBy { it.slotIndex }.take(count).map { it.slotIndex }.toSet()
         if (slots.isEmpty()) return Outcome(state)
         return Outcome(
@@ -287,7 +489,9 @@ class GameEngine(val config: GameConfig, private val random: Random = Random.Def
 
     /** Вызывается раз в секунду и при запуске игры: догоняет всё, что произошло «пока тебя не было». */
     fun tick(state: PlayerState, now: Long): Outcome {
-        val a = collectFinished(state, now)
+        val pruned = pruneBoosts(state, now)
+        val withOrders = refreshOrdersIfDue(pruned, now)
+        val a = collectFinished(withOrders, now)
         val b = autoWater(a.state, now)
         return Outcome(b.state, a.events + b.events)
     }

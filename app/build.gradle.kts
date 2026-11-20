@@ -13,7 +13,7 @@ android {
         applicationId = "com.example.alchemygarden"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
+        versionCode = 3
         versionName = "0.1"
     }
     buildTypes {

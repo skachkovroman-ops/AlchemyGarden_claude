@@ -27,8 +27,24 @@ data class ActiveExpedition(
 )
 
 @Serializable
+data class ActiveBoost(
+    val recipeId: String,
+    val type: BoostType,
+    val value: Double,
+    val expiresAtMillis: Long
+)
+
+@Serializable
+data class ActiveOrder(
+    val id: String,
+    val title: String,
+    val requirements: List<IngredientRequirement>,
+    val rewardEssence: Int
+)
+
+@Serializable
 data class PlayerState(
-    val version: Int = 1,
+    val version: Int = 2,
     /** Растения, которые можно сажать (семена бесконечные). */
     val unlockedSeeds: Set<String> = setOf("plant_01", "plant_02"),
     val discoveredPlants: Set<String> = setOf("plant_01", "plant_02", "plant_03", "plant_05"),
@@ -50,5 +66,16 @@ data class PlayerState(
     val activeExpedition: ActiveExpedition? = null,
     val lastAutoWaterAtMillis: Long = 0L,
     /** Общий выключатель музыки и звуков. */
-    val soundEnabled: Boolean = true
+    val soundEnabled: Boolean = true,
+    /** Валюта с доски заказов для прокачки гомункулов и улучшений. */
+    val essence: Int = 0,
+    /** Уровень каждого гомункула (по умолчанию 1; эволюция на 5 уровне). */
+    val homunculusLevels: Map<String, Int> = emptyMap(),
+    /** Уровень каждого постоянного улучшения. */
+    val upgradeLevels: Map<String, Int> = emptyMap(),
+    /** Активные временные эликсиры-бусты. */
+    val activeBoosts: List<ActiveBoost> = emptyList(),
+    /** Текущие заказы на доске. */
+    val currentOrders: List<ActiveOrder> = emptyList(),
+    val lastOrderRefreshMillis: Long = 0L
 )

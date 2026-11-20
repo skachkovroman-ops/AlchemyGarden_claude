@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -134,7 +135,7 @@ private fun StorageDialog(vm: GameViewModel, state: PlayerState, onDismiss: () -
                 items(list, key = { it.id }) { p ->
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         ResourceBadge(Art.plantIcon(p.id), p.emoji, state.inventoryPlants[p.id] ?: 0)
-                        Text(p.name, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Text(p.name, style = MaterialTheme.typography.bodySmall, maxLines = 2, textAlign = TextAlign.Center)
                     }
                 }
             } else {
@@ -142,7 +143,11 @@ private fun StorageDialog(vm: GameViewModel, state: PlayerState, onDismiss: () -
                 items(list, key = { it.id }) { r ->
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         ResourceBadge(Art.itemIcon(r.id), r.emoji, state.inventorySupplies[r.id] ?: 0)
-                        Text(r.name, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                        Text(r.name, style = MaterialTheme.typography.bodySmall, maxLines = 2, textAlign = TextAlign.Center)
+                        if (r.boost != null) {
+                            Spacer(Modifier.height(4.dp))
+                            WoodButton("Выпить", { vm.drinkElixir(r.id) })
+                        }
                     }
                 }
             }

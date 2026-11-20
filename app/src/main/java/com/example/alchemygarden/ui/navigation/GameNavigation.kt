@@ -7,12 +7,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -35,10 +39,14 @@ import com.example.alchemygarden.audio.SoundManager
 import com.example.alchemygarden.audio.Track
 import com.example.alchemygarden.domain.Sfx
 import com.example.alchemygarden.ui.components.GameImage
+import com.example.alchemygarden.ui.components.ParchmentDialog
+import com.example.alchemygarden.ui.components.RequirementChip
+import com.example.alchemygarden.ui.components.WoodButton
 import com.example.alchemygarden.ui.screens.encyclopedia.EncyclopediaScreen
 import com.example.alchemygarden.ui.screens.greenhouse.GreenhouseScreen
 import com.example.alchemygarden.ui.screens.laboratory.LaboratoryScreen
 import com.example.alchemygarden.ui.screens.map.IslandMapScreen
+import com.example.alchemygarden.ui.theme.Berry
 import com.example.alchemygarden.ui.theme.Ink
 import com.example.alchemygarden.ui.theme.Parchment
 import com.example.alchemygarden.ui.theme.WoodBorder
@@ -66,6 +74,7 @@ fun GameRoot(vm: GameViewModel) {
     val snackbar = remember { SnackbarHostState() }
 
     var overlay by rememberSaveable { mutableStateOf<Overlay?>(null) }
+    var showGuildDialog by remember { mutableStateOf(false) }
     val pager = rememberPagerState(pageCount = { 2 })
 
     // Общий выключатель звука
@@ -105,6 +114,7 @@ fun GameRoot(vm: GameViewModel) {
             vm = vm, pager = pager, soundOn = state.soundEnabled,
             onToggleSound = { vm.toggleSound() },
             onOpenMap = { sound.play(Sfx.PAGE); overlay = Overlay.MAP },
+            onOpenGuild = { sound.play(Sfx.PAGE); showGuildDialog = true },
             onOpenBook = { sound.play(Sfx.PAGE); overlay = Overlay.BOOK }
         )
 
@@ -120,10 +130,94 @@ fun GameRoot(vm: GameViewModel) {
             }
         }
 
+        if (showGuildDialog) {
+            GuildDialog(vm) { showGuildDialog = false }
+        }
+
         SnackbarHost(
             snackbar,
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 90.dp)
         )
+    }
+}
+
+@Composable
+private fun GuildDialog(vm: GameViewModel, onDismiss: () -> Unit) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var tab by remember { mutableStateOf(0) }
+    val config = vm.config
+
+    ParchmentDialog(onDismiss) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (tab == 0) "Доска заказов" else "Улучшения",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.weight(1f)
+                )
+                Text("✨ ${state.essence}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = tab == 0, onClick = { tab = 0 }, label = { Text("📜 Заказы") })
+                FilterChip(selected = tab == 1, onClick = { tab = 1 }, label = { Text("🛠️ Улучшения") })
+            }
+            Spacer(Modifier.height(8.dp))
+
+            if (tab == 0) {
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(state.currentOrders, key = { it.id }) { order ->
+                        val ready = vm.engine.hasAll(state, order.requirements)
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text(order.title, fontWeight = FontWeight.Bold)
+                            Text("Награда: +${order.rewardEssence} ✨", style = MaterialTheme.typography.bodySmall)
+                            order.requirements.forEach { req ->
+                                RequirementChip(config, req, vm.engine.have(state, req))
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            WoodButton("Сдать заказ", { vm.completeOrder(order.id) }, enabled = ready)
+                        }
+                        HorizontalDivider(color = WoodBorder.copy(alpha = 0.25f))
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                WoodButton(
+                    "Обновить список (5 ✨)",
+                    { vm.refreshOrders(5) },
+                    enabled = state.essence >= 5 && config.orderTemplates.isNotEmpty()
+                )
+            } else {
+                LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                    items(config.upgrades, key = { it.id }) { upg ->
+                        val curLvl = vm.engine.upgradeLevel(state, upg.id)
+                        val maxed = curLvl >= upg.maxLevel
+                        val cost = vm.engine.upgradeCost(upg, curLvl)
+                        val essenceCost = vm.engine.upgradeEssenceCost(upg, curLvl)
+                        val canBuy = !maxed && vm.engine.hasAll(state, cost) && state.essence >= essenceCost
+
+                        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text("${upg.emoji} ${upg.name} (Ур. $curLvl/${upg.maxLevel})", fontWeight = FontWeight.Bold)
+                            Text(upg.description, style = MaterialTheme.typography.bodySmall)
+                            if (!maxed) {
+                                Text(
+                                    "Эссенция: ${state.essence} / $essenceCost ✨",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (state.essence >= essenceCost) Ink else Berry
+                                )
+                                cost.forEach { req ->
+                                    RequirementChip(config, req, vm.engine.have(state, req))
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                WoodButton("Улучшить", { vm.buyUpgrade(upg.id) }, enabled = canBuy)
+                            } else {
+                                Text("Максимальный уровень достигнут", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        HorizontalDivider(color = WoodBorder.copy(alpha = 0.25f))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -134,6 +228,7 @@ private fun MainHub(
     soundOn: Boolean,
     onToggleSound: () -> Unit,
     onOpenMap: () -> Unit,
+    onOpenGuild: () -> Unit,
     onOpenBook: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -149,6 +244,7 @@ private fun MainHub(
             verticalAlignment = Alignment.CenterVertically
         ) {
             CornerButton("Карта", "btn_map", "🗺️", onOpenMap)
+            CornerButton("Заказы", "btn_guild", "📜", onOpenGuild)
             SoundButton(soundOn, onToggleSound)
             CornerButton("Гербарий", "btn_book", "📖", onOpenBook)
         }
